@@ -1,0 +1,109 @@
+name: Auto Incremental Build Latest crDroid 10.x for Redmi K30 Ultra
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 360  # 最长 6 小时
+
+    steps:
+      # 1️⃣ Checkout workflow repo
+      - name: Checkout workflow repo
+        uses: actions/checkout@v3
+
+      # 2️⃣ Install build dependencies
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+          openjdk-17-jdk bc bison build-essential curl flex \
+          g++-multilib gcc-multilib git gnupg gperf imagemagick \
+          lib32ncurses-dev lib32readline-dev lib32z1-dev liblz4-tool \
+          libncurses5-dev libsdl1.2-dev libssl-dev libxml2-utils \
+          lzop pngcrush rsync schedtool squashfs-tools xsltproc zip zlib1g-dev jq
+
+      # 3️⃣ Get latest crDroid tag
+      - name: Get latest crDroid 10.x tag
+        id: latest_tag
+        run: |
+          LATEST_TAG=$(curl -s https://api.github.com/repos/crdroidandroid/android/tags | jq -r '.[0].name')
+          echo "Latest crDroid tag: $LATEST_TAG"
+          echo "TAG=$LATEST_TAG" >> $GITHUB_ENV
+          DATE=$(date +%Y%m%d)
+          echo "DATE=$DATE" >> $GITHUB_ENV
+
+      # 4️⃣ Restore repo cache
+      - name: Restore repo cache
+        uses: actions/cache@v3
+        id: cache-repo
+        with:
+          path: ~/crdroid
+          key: crdroid-${{ env.TAG }}-repo
+
+      # 5️⃣ Initialize repo only if cache miss
+      - name: Initialize crDroid repo
+        if: steps.cache-repo.outputs.cache-hit != 'true'
+        run: |
+          mkdir -p ~/crdroid && cd ~/crdroid
+          repo init -u https://github.com/crdroidandroid/android.git -b $TAG
+          repo sync -c -j4 --no-clone-bundle --quiet
+
+      # 6️⃣ Pull latest updates if cache hit
+      - name: Update crDroid repo
+        if: steps.cache-repo.outputs.cache-hit == 'true'
+        run: |
+          cd ~/crdroid
+          repo sync -c -j4 --quiet
+
+      # 7️⃣ Clone/update device tree and vendor with caching
+      - name: Clone/update device tree and vendor
+        uses: actions/cache@v3
+        with:
+          path: |
+            ~/crdroid/device/xiaomi/cezanne
+            ~/crdroid/vendor/xiaomi
+          key: device-vendor-cache
+      - name: Ensure device tree and vendor exist
+        run: |
+          cd ~/crdroid
+          if [ ! -d "device/xiaomi/cezanne" ]; then
+            git clone https://github.com/crdroidandroid/android_device_xiaomi_cezanne.git device/xiaomi/cezanne
+          else
+            cd device/xiaomi/cezanne && git pull
+          fi
+          if [ ! -d "vendor/xiaomi" ]; then
+            git clone https://github.com/crdroidandroid/android_vendor_xiaomi.git vendor/xiaomi
+          else
+            cd vendor/xiaomi && git pull
+          fi
+
+      # 8️⃣ Setup build environment
+      - name: Setup build environment
+        run: |
+          cd ~/crdroid
+          source build/envsetup.sh
+          lunch crdroid_cezanne-userdebug
+
+      # 9️⃣ Build ROM
+      - name: Build crDroid ROM
+        run: |
+          cd ~/crdroid
+          mka bacon -j$(nproc)
+
+      # 🔟 Rename artifact with version and date
+      - name: Rename artifact
+        run: |
+          cd ~/crdroid/out/target/product/cezanne
+          for f in *.zip; do
+            NEW_NAME="crdroid-10-cezanne-${TAG}-${DATE}.zip"
+            mv "$f" "$NEW_NAME"
+          done
+
+      # 1️⃣1️⃣ Upload compiled ROM artifact
+      - name: Upload artifact
+        uses: actions/upload-artifact@v3
+        with:
+          name: crdroid-10-cezanne-${{ env.TAG }}-${{ env.DATE }}
+          path: ~/crdroid/out/target/product/cezanne/*.zip
